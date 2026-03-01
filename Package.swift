@@ -15,7 +15,7 @@ let package = Package(
             dependencies: [
                 .product(name: "Sparkle", package: "Sparkle")
             ],
-            path: "masko-desktop",
+            path: "Sources",
             exclude: ["masko-desktop.entitlements"],
             resources: [
                 .copy("Resources/Fonts"),
