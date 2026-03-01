@@ -120,7 +120,7 @@ enum HookInstaller {
         try writeSettings(settings)
     }
 
-    private static let scriptVersion = "# version: 7"
+    private static let scriptVersion = "# version: 9"
 
     /// Create or update hook-sender.sh
     static func ensureScriptExists() throws {
@@ -147,34 +147,39 @@ enum HookInstaller {
         \(scriptVersion)
         # hook-sender.sh — Forwards Claude Code hook events to masko-desktop
         # Exit instantly if the desktop app isn't running (avoids curl timeout latency)
-        pgrep -xq masko-desktop || exit 0
+        pgrep -xq masko-for-claude-code || exit 0
         INPUT=$(cat 2>/dev/null || echo '{}')
         EVENT_NAME=$(echo "$INPUT" | grep -o '"hook_event_name":"[^"]*"' | head -1 | cut -d'"' -f4)
 
-        # Walk up process tree to find the terminal app PID
+        # Walk up process tree to find terminal app PID and shell PID
         TERM_PID=""
+        LAST_SHELL=""
+        SHELL_PID=""
         CUR=$$
         while [ "$CUR" != "1" ] && [ -n "$CUR" ]; do
           PAR=$(ps -o ppid= -p "$CUR" 2>/dev/null | tr -d ' ')
           [ -z "$PAR" ] && break
           COMM=$(ps -o comm= -p "$PAR" 2>/dev/null | xargs basename 2>/dev/null)
           case "$COMM" in
-            Terminal|iTerm2|wezterm-gui|kitty|Cursor|Code|Windsurf|ghostty|alacritty|Warp|Zed) TERM_PID="$PAR"; break ;;
+            zsh|bash|fish|sh|nu|pwsh|elvish) LAST_SHELL="$PAR" ;;
+            Terminal|iTerm2|wezterm-gui|kitty|Cursor|Code|Windsurf|ghostty|alacritty|Warp|Zed) TERM_PID="$PAR"; SHELL_PID="$LAST_SHELL"; break ;;
           esac
           CUR="$PAR"
         done
 
-        # Inject terminal_pid into JSON payload (before the closing brace)
+        # Inject terminal_pid and shell_pid into JSON payload
         if [ -n "$TERM_PID" ]; then
-          INPUT=$(echo "$INPUT" | sed "s/}$/,\\"terminal_pid\\":$TERM_PID}/")
+          INJECT="\\"terminal_pid\\":$TERM_PID"
+          [ -n "$SHELL_PID" ] && INJECT="$INJECT,\\"shell_pid\\":$SHELL_PID"
+          INPUT=$(echo "$INPUT" | sed "s/}$/,$INJECT}/")
         fi
 
         if [ "$EVENT_NAME" = "PermissionRequest" ]; then
-            # Blocking: wait up to 120s for user decision/answer
+            # Blocking: wait indefinitely for user decision/answer
             RESPONSE=$(curl -s -w "\\n%{http_code}" -X POST \\
               -H "Content-Type: application/json" -d "$INPUT" \\
               "http://localhost:\(Constants.serverPort)/hook" \\
-              --connect-timeout 2 --max-time 120 2>/dev/null)
+              --connect-timeout 2 2>/dev/null)
             HTTP_CODE=$(echo "$RESPONSE" | tail -1)
             BODY=$(echo "$RESPONSE" | sed '$d')
             [ -n "$BODY" ] && echo "$BODY"

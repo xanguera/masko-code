@@ -45,6 +45,9 @@ struct ClaudeEvent: Identifiable, Codable {
     // Terminal PID (injected by hook script — walk up process tree to find terminal app)
     let terminalPid: Int?
 
+    // Shell PID (injected by hook script — the zsh/bash PID that VS Code Terminal.processId returns)
+    let shellPid: Int?
+
     // Timestamp (set locally when received)
     let receivedAt: Date
 
@@ -80,6 +83,7 @@ struct ClaudeEvent: Identifiable, Codable {
         case taskSubject = "task_subject"
         case permissionSuggestions = "permission_suggestions"
         case terminalPid = "terminal_pid"
+        case shellPid = "shell_pid"
         case receivedAt
     }
 
@@ -109,6 +113,7 @@ struct ClaudeEvent: Identifiable, Codable {
         self.taskSubject = try container.decodeIfPresent(String.self, forKey: .taskSubject)
         self.permissionSuggestions = try container.decodeIfPresent([AnyCodable].self, forKey: .permissionSuggestions)
         self.terminalPid = try container.decodeIfPresent(Int.self, forKey: .terminalPid)
+        self.shellPid = try container.decodeIfPresent(Int.self, forKey: .shellPid)
         self.receivedAt = Date()
     }
 
@@ -135,7 +140,8 @@ struct ClaudeEvent: Identifiable, Codable {
         taskId: String? = nil,
         taskSubject: String? = nil,
         permissionSuggestions: [AnyCodable]? = nil,
-        terminalPid: Int? = nil
+        terminalPid: Int? = nil,
+        shellPid: Int? = nil
     ) {
         self.id = UUID()
         self.hookEventName = hookEventName
@@ -160,6 +166,7 @@ struct ClaudeEvent: Identifiable, Codable {
         self.taskId = taskId
         self.taskSubject = taskSubject
         self.terminalPid = terminalPid
+        self.shellPid = shellPid
         self.permissionSuggestions = permissionSuggestions
         self.receivedAt = Date()
     }

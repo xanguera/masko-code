@@ -9,16 +9,20 @@ struct OnboardingView: View {
     @State private var step = 0
     @State private var hookInstalled = false
     @State private var hookError: String?
+    @State private var ideExtensionInstalled = false
+    @State private var ideExtensionError: String?
     @State private var mascotActivated = false
 
-    private let totalSteps = 4
+    private let totalSteps = 5
 
     /// Advance to the next step that actually needs user action, skipping already-completed ones.
     private func nextStep(after current: Int) {
         var next = current + 1
         // Skip hooks step if already installed
         if next == 1 && hookInstalled { next = 2 }
-        // Step 2 (notifications) and 3 (mascot) always show
+        // Skip IDE step if no IDE detected
+        if next == 3 && ExtensionInstaller.availableIDEs().isEmpty { next = 4 }
+        // Step 2 (notifications) and 4 (mascot) always show
         step = min(next, totalSteps - 1)
     }
 
@@ -31,7 +35,8 @@ struct OnboardingView: View {
                 case 0: welcomeStep
                 case 1: hooksStep
                 case 2: notificationsStep
-                case 3: mascotStep
+                case 3: ideIntegrationStep
+                case 4: mascotStep
                 default: EmptyView()
                 }
             }
@@ -172,7 +177,56 @@ struct OnboardingView: View {
         }
     }
 
-    // MARK: - Step 3: Activate Mascot
+    // MARK: - Step 3: IDE Integration (optional)
+
+    private var ideIntegrationStep: some View {
+        VStack(spacing: 20) {
+            stepIcon(ideExtensionInstalled ? "checkmark.circle.fill" : "terminal.fill",
+                     color: ideExtensionInstalled ? .green : Constants.orangePrimary)
+
+            VStack(spacing: 8) {
+                Text("Switch terminals instantly")
+                    .font(Constants.heading(size: 24, weight: .bold))
+                    .foregroundStyle(Constants.textPrimary)
+
+                let ideNames = ExtensionInstaller.availableIDEs().map(\.name).joined(separator: " or ")
+                Text("Install a tiny extension so clicking a session in Masko jumps to the exact terminal tab in \(ideNames).")
+                    .font(Constants.body(size: 14))
+                    .foregroundStyle(Constants.textMuted)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, 20)
+            }
+
+            if let error = ideExtensionError {
+                Text(error)
+                    .font(Constants.body(size: 12))
+                    .foregroundStyle(.red)
+            }
+
+            if ideExtensionInstalled {
+                HStack(spacing: 6) {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                    Text("Extension installed")
+                        .font(Constants.body(size: 14, weight: .medium))
+                        .foregroundStyle(.green)
+                }
+
+                primaryButton("Continue") {
+                    nextStep(after: 3)
+                }
+            } else {
+                primaryButton("Install Extension") {
+                    installIDEExtension()
+                }
+
+                skipButton { nextStep(after: 3) }
+            }
+        }
+    }
+
+    // MARK: - Step 4: Activate Mascot
 
     private var mascotStep: some View {
         VStack(spacing: 20) {
@@ -266,6 +320,21 @@ struct OnboardingView: View {
             }
         } catch {
             hookError = error.localizedDescription
+        }
+    }
+
+    private func installIDEExtension() {
+        ideExtensionError = nil
+        do {
+            try ExtensionInstaller.install()
+            ideExtensionInstalled = true
+            UserDefaults.standard.set(true, forKey: "ideExtensionEnabled")
+            ExtensionInstaller.triggerPermissionPrompt()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                nextStep(after: 3)
+            }
+        } catch {
+            ideExtensionError = error.localizedDescription
         }
     }
 

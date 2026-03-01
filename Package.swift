@@ -2,7 +2,7 @@
 import PackageDescription
 
 let package = Package(
-    name: "masko-desktop",
+    name: "masko-for-claude-code",
     platforms: [
         .macOS(.v14)
     ],
@@ -11,7 +11,7 @@ let package = Package(
     ],
     targets: [
         .executableTarget(
-            name: "masko-desktop",
+            name: "masko-for-claude-code",
             dependencies: [
                 .product(name: "Sparkle", package: "Sparkle")
             ],
@@ -20,7 +20,8 @@ let package = Package(
             resources: [
                 .copy("Resources/Fonts"),
                 .copy("Resources/Images"),
-                .copy("Resources/Defaults")
+                .copy("Resources/Defaults"),
+                .copy("Resources/Extensions")
             ]
         )
     ]

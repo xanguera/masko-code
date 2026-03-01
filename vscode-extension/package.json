@@ -1,0 +1,14 @@
+{
+  "name": "masko-terminal-focus",
+  "displayName": "Masko Terminal Focus",
+  "description": "Allows Masko for Claude Code to focus specific terminal tabs",
+  "version": "1.0.0",
+  "publisher": "masko",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": ["Other"],
+  "activationEvents": ["onUri"],
+  "main": "./extension.js",
+  "contributes": {}
+}

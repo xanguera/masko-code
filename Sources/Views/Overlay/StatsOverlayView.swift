@@ -65,6 +65,14 @@ struct StatsOverlayView: View {
         .padding(.vertical, 4)
         .background(Color.black.opacity(0.6))
         .clipShape(Capsule())
-        .allowsHitTesting(false)
+        .contentShape(Capsule())
+        .onTapGesture {
+            let active = sessionStore.activeSessions
+            if active.count == 1, let session = active.first {
+                IDETerminalFocus.focusSession(session)
+            } else if active.count > 1 {
+                AppDelegate.showDashboard()
+            }
+        }
     }
 }

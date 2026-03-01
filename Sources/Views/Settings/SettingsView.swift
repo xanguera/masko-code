@@ -7,6 +7,10 @@ struct SettingsView: View {
     @State private var hookError: String?
     @State private var showUninstallConfirm = false
     @State private var videoCacheSize: Int64 = 0
+    @State private var ideExtensionInstalled = false
+    @AppStorage("ideExtensionEnabled") private var ideExtensionEnabled = true
+    @State private var extensionError: String?
+    @State private var extensionBusy = false
 
     private var appVersion: String {
         Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown"
@@ -63,6 +67,64 @@ struct SettingsView: View {
             } header: {
                 Text("Claude Code").font(Constants.heading(size: 13, weight: .semibold))
             }
+
+            Section {
+                if extensionBusy {
+                    HStack {
+                        Text("Terminal Switching")
+                            .foregroundColor(Constants.textPrimary)
+                        Spacer()
+                        ProgressView()
+                            .controlSize(.small)
+                    }
+                } else if ideExtensionInstalled {
+                    HStack {
+                        Text("Terminal Switching")
+                            .foregroundColor(Constants.textPrimary)
+                        Spacer()
+                        Circle().fill(Color.green).frame(width: 8, height: 8)
+                        Text("Active").foregroundColor(Constants.textMuted)
+                    }
+                    Toggle("Enable", isOn: $ideExtensionEnabled)
+                        .foregroundColor(Constants.textPrimary)
+                    Button(action: uninstallExtension) {
+                        Text("Uninstall")
+                            .foregroundColor(Color(.sRGB, red: 220/255, green: 38/255, blue: 38/255))
+                    }
+                    .buttonStyle(.plain)
+                } else {
+                    let ides = ExtensionInstaller.availableIDEs()
+                    if !ides.isEmpty {
+                        HStack {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Terminal Switching")
+                                    .foregroundColor(Constants.textPrimary)
+                                Text("Jump to the exact terminal tab in \(ides.map(\.name).joined(separator: ", "))")
+                                    .font(.system(size: 11))
+                                    .foregroundColor(Constants.textMuted)
+                            }
+                            Spacer()
+                            Button(action: installExtension) {
+                                Text("Enable")
+                                    .font(Constants.heading(size: 12, weight: .semibold))
+                                    .foregroundColor(.white)
+                                    .padding(.horizontal, 14)
+                                    .padding(.vertical, 6)
+                                    .background(Constants.orangePrimary)
+                                    .clipShape(Capsule())
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+                if let error = extensionError {
+                    Text(error).font(.system(size: 11)).foregroundColor(.red)
+                }
+            } header: {
+                Text("IDE Integration").font(Constants.heading(size: 13, weight: .semibold))
+            }
+            .animation(.easeInOut(duration: 0.25), value: ideExtensionInstalled)
+            .animation(.easeInOut(duration: 0.25), value: extensionBusy)
 
             Section {
                 HStack {
@@ -181,6 +243,7 @@ struct SettingsView: View {
         .onAppear {
             isHookEnabled = HookInstaller.isRegistered()
             videoCacheSize = VideoCache.shared.cacheSize
+            ideExtensionInstalled = ExtensionInstaller.isInstalled()
         }
         .alert("Uninstall Masko?", isPresented: $showUninstallConfirm) {
             Button("Cancel", role: .cancel) {}
@@ -216,11 +279,49 @@ struct SettingsView: View {
         return String(format: "%.0f MB", mb)
     }
 
+    private func installExtension() {
+        extensionError = nil
+        extensionBusy = true
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                try ExtensionInstaller.install()
+                let installed = ExtensionInstaller.isInstalled()
+                DispatchQueue.main.async {
+                    ideExtensionInstalled = installed
+                    ideExtensionEnabled = true
+                    extensionBusy = false
+                    ExtensionInstaller.triggerPermissionPrompt()
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    extensionError = error.localizedDescription
+                    extensionBusy = false
+                }
+            }
+        }
+    }
+
+    private func uninstallExtension() {
+        extensionError = nil
+        extensionBusy = true
+        DispatchQueue.global(qos: .userInitiated).async {
+            ExtensionInstaller.uninstall()
+            DispatchQueue.main.async {
+                ideExtensionInstalled = false
+                ideExtensionEnabled = false
+                extensionBusy = false
+            }
+        }
+    }
+
     private func performUninstall() {
         let fm = FileManager.default
 
         // 1. Remove hooks from ~/.claude/settings.json
         try? HookInstaller.uninstall()
+
+        // 1.5. Remove IDE extension
+        ExtensionInstaller.uninstall()
 
         // 2. Delete ~/.masko-desktop/ (hook script)
         let maskoDesktopDir = NSHomeDirectory() + "/.masko-desktop"

@@ -67,18 +67,26 @@ struct MenuBarView: View {
                         .font(Constants.heading(size: 11, weight: .medium))
                         .foregroundColor(Constants.textMuted)
                     ForEach(appStore.sessionStore.activeSessions) { session in
-                        HStack {
-                            Image(systemName: "terminal")
-                                .font(.caption)
-                                .foregroundColor(Constants.orangePrimary)
-                            Text(session.projectName ?? "Unknown")
-                                .font(Constants.body(size: 12))
-                                .foregroundColor(Constants.textPrimary)
-                            Spacer()
-                            Text("\(session.eventCount)")
-                                .font(.system(size: 10))
-                                .foregroundColor(Constants.textMuted)
+                        Button {
+                            IDETerminalFocus.focusSession(session)
+                        } label: {
+                            HStack {
+                                Image(systemName: "terminal")
+                                    .font(.caption)
+                                    .foregroundColor(Constants.orangePrimary)
+                                Text(session.projectName ?? "Unknown")
+                                    .font(Constants.body(size: 12))
+                                    .foregroundColor(Constants.textPrimary)
+                                Spacer()
+                                Image(systemName: "arrow.up.forward")
+                                    .font(.system(size: 9))
+                                    .foregroundColor(Constants.textMuted)
+                                Text("\(session.eventCount)")
+                                    .font(.system(size: 10))
+                                    .foregroundColor(Constants.textMuted)
+                            }
                         }
+                        .buttonStyle(.plain)
                     }
                 }
                 .padding(.horizontal)

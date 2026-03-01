@@ -79,46 +79,9 @@ private func markdownText(_ string: String) -> Text {
 }
 
 /// Activate the terminal running the Claude Code session.
-/// Uses the exact terminal PID from the hook when available, falls back to first running terminal.
-/// AppleScript `tell application ... to activate` is the most reliable cross-Space activation on macOS.
-private func focusTerminal(pid: Int? = nil) {
-    // Try PID-based activation first
-    if let pid = pid,
-       let app = NSRunningApplication(processIdentifier: pid_t(pid)),
-       let name = app.localizedName {
-        activateApp(named: name)
-        return
-    }
-    // Fallback: activate first running terminal app
-    let bundleIDs = [
-        "com.apple.Terminal",
-        "com.googlecode.iterm2",
-        "com.github.wez.wezterm",
-        "net.kovidgoyal.kitty",
-        "com.todesktop.230313mzl4w4u92", // Cursor
-        "com.microsoft.VSCode",
-        "com.microsoft.VSCodeInsiders",
-        "com.exafunction.windsurf",       // Windsurf
-        "dev.zed.Zed",
-        "com.mitchellh.ghostty",
-        "org.alacritty",
-        "dev.warp.Warp-Stable",
-    ]
-    for id in bundleIDs {
-        if let app = NSWorkspace.shared.runningApplications.first(where: { $0.bundleIdentifier == id }),
-           let name = app.localizedName {
-            activateApp(named: name)
-            return
-        }
-    }
-}
-
-private func activateApp(named name: String) {
-    let src = "tell application \"\(name)\" to activate"
-    if let script = NSAppleScript(source: src) {
-        var error: NSDictionary?
-        script.executeAndReturnError(&error)
-    }
+/// Delegates to shared IDETerminalFocus utility (supports exact tab switching via IDE extension).
+private func focusTerminal(pid: Int? = nil, shellPid: Int? = nil) {
+    IDETerminalFocus.focus(terminalPid: pid, shellPid: shellPid)
 }
 
 // MARK: - AskUserQuestion View
@@ -160,7 +123,7 @@ struct AskUserQuestionView: View {
 
                 Spacer()
 
-                Button { focusTerminal(pid: permission.event.terminalPid) } label: {
+                Button { focusTerminal(pid: permission.event.terminalPid, shellPid: permission.event.shellPid) } label: {
                     Image(systemName: "terminal.fill")
                         .font(.system(size: 10))
                         .foregroundStyle(OverlayStyle.textHint)
@@ -251,7 +214,7 @@ struct AskUserQuestionView: View {
                 .foregroundStyle(OverlayStyle.textPrimary)
                 .fixedSize(horizontal: false, vertical: true)
                 .contentShape(Rectangle())
-                .onTapGesture { focusTerminal(pid: permission.event.terminalPid) }
+                .onTapGesture { focusTerminal(pid: permission.event.terminalPid, shellPid: permission.event.shellPid) }
 
             VStack(alignment: .leading, spacing: 2) {
                 ForEach(Array(question.options.enumerated()), id: \.offset) { idx, option in
@@ -392,7 +355,7 @@ struct ExitPlanModeView: View {
 
                 Spacer()
 
-                Button { focusTerminal(pid: permission.event.terminalPid) } label: {
+                Button { focusTerminal(pid: permission.event.terminalPid, shellPid: permission.event.shellPid) } label: {
                     Image(systemName: "terminal.fill")
                         .font(.system(size: 10))
                         .foregroundStyle(OverlayStyle.textHint)
@@ -606,7 +569,7 @@ struct PermissionPromptView: View {
 
                 Spacer()
 
-                Button { focusTerminal(pid: permission.event.terminalPid) } label: {
+                Button { focusTerminal(pid: permission.event.terminalPid, shellPid: permission.event.shellPid) } label: {
                     Image(systemName: "terminal.fill")
                         .font(.system(size: 10))
                         .foregroundStyle(OverlayStyle.textHint)
@@ -743,7 +706,7 @@ private struct CollapsedPermissionPill: View {
 
             Spacer(minLength: 0)
 
-            Button { focusTerminal(pid: permission.event.terminalPid) } label: {
+            Button { focusTerminal(pid: permission.event.terminalPid, shellPid: permission.event.shellPid) } label: {
                 Image(systemName: "terminal.fill")
                     .font(.system(size: 9))
                     .foregroundStyle(OverlayStyle.textHint)

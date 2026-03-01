@@ -13,6 +13,7 @@ struct ClaudeSession: Identifiable, Codable {
     var activeSubagentCount: Int = 0
     var isCompacting: Bool = false
     var terminalPid: Int?
+    var shellPid: Int?
     var transcriptPath: String?
 
     enum Status: String, Codable {
@@ -243,6 +244,9 @@ final class SessionStore {
             if let path = event.transcriptPath, sessions[index].transcriptPath == nil {
                 sessions[index].transcriptPath = path
             }
+            if let pid = event.shellPid, sessions[index].shellPid == nil {
+                sessions[index].shellPid = pid
+            }
 
             // Only SessionStart can reactivate an ended session
             if sessions[index].status == .ended {
@@ -266,6 +270,9 @@ final class SessionStore {
                 sessions[index].isCompacting = false
                 if let pid = event.terminalPid {
                     sessions[index].terminalPid = pid
+                }
+                if let pid = event.shellPid {
+                    sessions[index].shellPid = pid
                 }
 
             case .userPromptSubmit:
@@ -312,6 +319,7 @@ final class SessionStore {
                 lastEventAt: Date()
             )
             session.terminalPid = event.terminalPid
+            session.shellPid = event.shellPid
             session.transcriptPath = event.transcriptPath
             sessions.insert(session, at: 0)
         }

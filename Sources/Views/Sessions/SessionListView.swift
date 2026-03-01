@@ -31,7 +31,12 @@ struct SessionListView: View {
                                 isSelected: selectedSession?.id == session.id
                             )
                             .onTapGesture {
-                                selectedSession = session
+                                if selectedSession?.id == session.id {
+                                    // Second tap on selected session: focus terminal
+                                    IDETerminalFocus.focusSession(session)
+                                } else {
+                                    selectedSession = session
+                                }
                             }
                         }
                     }
@@ -51,6 +56,7 @@ private struct SessionRow: View {
     let session: ClaudeSession
     let isSelected: Bool
     @State private var isHovered = false
+    @State private var isFocusHovered = false
 
     var body: some View {
         HStack {
@@ -75,6 +81,19 @@ private struct SessionRow: View {
             }
 
             Spacer()
+
+            if session.status == .active {
+                Button {
+                    IDETerminalFocus.focusSession(session)
+                } label: {
+                    Image(systemName: "terminal.fill")
+                        .font(.caption2)
+                        .foregroundColor(isFocusHovered ? Constants.orangeHover : Constants.orangePrimary)
+                }
+                .buttonStyle(.plain)
+                .help("Switch to terminal")
+                .onHover { isFocusHovered = $0 }
+            }
 
             Text(session.status.rawValue.capitalized)
                 .font(Constants.body(size: 11, weight: .medium))
