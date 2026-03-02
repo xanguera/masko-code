@@ -257,27 +257,51 @@ struct MaskoDashboardView: View {
     // MARK: - Empty State
 
     private var emptyView: some View {
-        VStack(spacing: 16) {
+        VStack(spacing: 20) {
             Spacer()
 
             Image(systemName: "wand.and.stars")
                 .font(.system(size: 40))
                 .foregroundColor(Constants.orangePrimary.opacity(0.4))
-            Text("No Mascots")
+            Text("No Mascots Yet")
                 .font(Constants.heading(size: 22, weight: .semibold))
                 .foregroundColor(Constants.textPrimary)
-            Text("Add a mascot config from the Masko canvas export")
-                .font(Constants.body(size: 14))
-                .foregroundColor(Constants.textMuted)
-                .multilineTextAlignment(.center)
 
-            Button(action: { showingAddSheet = true }) {
-                HStack(spacing: 6) {
-                    Image(systemName: "plus.circle.fill")
-                    Text("Add Mascot")
+            VStack(spacing: 8) {
+                Text("Create your own AI mascot on masko.ai")
+                    .font(Constants.body(size: 14))
+                    .foregroundColor(Constants.textMuted)
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Label("Create a collection on masko.ai", systemImage: "1.circle.fill")
+                    Label("Open the Canvas editor", systemImage: "2.circle.fill")
+                    Label("Choose the \"Claude Code\" template", systemImage: "3.circle.fill")
+                    Label("Export and paste the config here", systemImage: "4.circle.fill")
                 }
+                .font(Constants.body(size: 13))
+                .foregroundColor(Constants.textMuted)
             }
-            .buttonStyle(BrandPrimaryButton())
+            .multilineTextAlignment(.center)
+
+            HStack(spacing: 10) {
+                Button(action: {
+                    NSWorkspace.shared.open(URL(string: "\(Constants.maskoBaseURL)/collections")!)
+                }) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "paintbrush.pointed.fill")
+                        Text("Create Your Mascot")
+                    }
+                }
+                .buttonStyle(BrandPrimaryButton())
+
+                Button(action: { showingAddSheet = true }) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "doc.on.clipboard")
+                        Text("Paste JSON")
+                    }
+                }
+                .buttonStyle(BrandSecondaryButton())
+            }
 
             Spacer()
         }
@@ -312,7 +336,47 @@ struct MaskoDashboardView: View {
                 }
             }
             .padding(20)
+
+            // CTA banner
+            createMascotBanner
+                .padding(.horizontal, 20)
+                .padding(.bottom, 20)
         }
+    }
+
+    private var createMascotBanner: some View {
+        Button(action: {
+            NSWorkspace.shared.open(URL(string: "\(Constants.maskoBaseURL)/collections")!)
+        }) {
+            HStack(spacing: 12) {
+                Image(systemName: "paintbrush.pointed.fill")
+                    .font(.system(size: 16))
+                    .foregroundColor(Constants.orangePrimary)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Create your own mascot")
+                        .font(Constants.heading(size: 14, weight: .semibold))
+                        .foregroundColor(Constants.textPrimary)
+                    Text("Open masko.ai, go to Canvas, and pick the Claude Code template")
+                        .font(Constants.body(size: 12))
+                        .foregroundColor(Constants.textMuted)
+                }
+
+                Spacer()
+
+                Image(systemName: "arrow.up.right")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(Constants.orangePrimary)
+            }
+            .padding(14)
+            .background(Constants.orangePrimary.opacity(0.05))
+            .clipShape(RoundedRectangle(cornerRadius: Constants.cornerRadius))
+            .overlay(
+                RoundedRectangle(cornerRadius: Constants.cornerRadius)
+                    .stroke(Constants.orangePrimary.opacity(0.2), lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
     }
 
     // MARK: - Add Sheet

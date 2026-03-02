@@ -144,6 +144,19 @@ final class SessionStore {
         return false
     }
 
+    /// Invalidate all timers — called on app termination
+    func stopTimers() {
+        reconcileTimer?.invalidate()
+        reconcileTimer = nil
+        interruptWatcherTimer?.invalidate()
+        interruptWatcherTimer = nil
+    }
+
+    deinit {
+        reconcileTimer?.invalidate()
+        interruptWatcherTimer?.invalidate()
+    }
+
     // MARK: - Crash Recovery
 
     /// Check for crashed Claude processes and mark orphaned sessions as ended.
@@ -248,15 +261,20 @@ final class SessionStore {
                 sessions[index].shellPid = pid
             }
 
-            // Only SessionStart can reactivate an ended session
+            // Reactivate ended sessions when active-work events arrive
+            // (handles app restart while Claude Code is mid-session)
             if sessions[index].status == .ended {
-                if event.eventType == .sessionStart {
+                let reactivatingEvents: Set<HookEventType> = [
+                    .sessionStart, .userPromptSubmit, .preToolUse, .postToolUse,
+                    .permissionRequest, .preCompact, .subagentStart
+                ]
+                if let eventType = event.eventType, reactivatingEvents.contains(eventType) {
                     sessions[index].status = .active
-                    sessions[index].phase = .idle
-                    sessions[index].isCompacting = false
+                    sessions[index].phase = (eventType == .sessionStart) ? .idle : .running
+                    sessions[index].isCompacting = eventType == .preCompact
                     sessions[index].activeSubagentCount = 0
                 } else {
-                    // Stale event for ended session — count it but skip transitions
+                    // Truly stale event (e.g. Stop, SessionEnd) — count it but skip transitions
                     persist()
                     return
                 }

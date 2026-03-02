@@ -11,9 +11,9 @@
     <key>CFBundleDisplayName</key>
     <string>Masko for Claude Code</string>
     <key>CFBundleVersion</key>
-    <string>2</string>
+    <string>3</string>
     <key>CFBundleShortVersionString</key>
-    <string>1.1.0</string>
+    <string>1.2.0</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>LSMinimumSystemVersion</key>
@@ -21,7 +21,7 @@
     <key>NSHighResolutionCapable</key>
     <true/>
     <key>LSUIElement</key>
-    <true/>
+    <false/>
     <key>CFBundleIconFile</key>
     <string>AppIcon</string>
     <key>ATSApplicationFontsPath</key>

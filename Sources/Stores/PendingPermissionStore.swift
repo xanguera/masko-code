@@ -366,6 +366,21 @@ final class PendingPermissionStore {
         }
     }
 
+    /// Invalidate timers and cancel all open connections — called on app termination
+    func stopTimers() {
+        livenessTimer?.invalidate()
+        livenessTimer = nil
+        // Cancel all held NWConnections so they don't linger
+        for perm in pending {
+            perm.connection.cancel()
+        }
+        pending.removeAll()
+    }
+
+    deinit {
+        livenessTimer?.invalidate()
+    }
+
     private func checkConnectionLiveness() {
         let staleIds = pending.compactMap { perm -> UUID? in
             switch perm.connection.state {

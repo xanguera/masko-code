@@ -39,6 +39,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// Dock icon click — reopen the dashboard window
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        AppDelegate.showDashboard()
+        return true
+    }
+
     /// Show the dashboard window
     static func showDashboard() {
         NSApp.setActivationPolicy(.regular)

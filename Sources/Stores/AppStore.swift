@@ -123,6 +123,22 @@ final class AppStore {
             self?.sessionStore.reconcileIfNeeded()
         }
 
+        // Clean up on app termination to avoid zombie NWListener processes
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.willTerminateNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.stop()
+        }
+
         isReady = true
+    }
+
+    /// Tear down server and timers to prevent zombie processes
+    func stop() {
+        localServer.stop()
+        sessionStore.stopTimers()
+        pendingPermissionStore.stopTimers()
     }
 }

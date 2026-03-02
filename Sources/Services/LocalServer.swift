@@ -181,6 +181,11 @@ final class LocalServer {
 
     func stop() {
         listener?.cancel()
+        listener = nil
         isRunning = false
+    }
+
+    deinit {
+        listener?.cancel()
     }
 }
