@@ -42,16 +42,13 @@ final class AppStore {
             Task { @MainActor in
                 await self.eventProcessor.process(event)
 
-                // If the tool that was awaiting permission has now completed,
-                // the user answered from the terminal — dismiss the overlay prompt.
-                // Match by toolUseId to avoid false dismissals from subagent events.
+                // If a subsequent event arrives for a session with pending permissions,
+                // the user resolved the permission from the terminal — dismiss the overlay.
+                // PermissionRequest events have toolUseId=nil, so we match by sessionId only.
                 if let eventType = event.eventType,
                    let sid = event.sessionId,
-                   let toolUseId = event.toolUseId,
-                   (eventType == .postToolUse || eventType == .postToolUseFailure),
-                   self.pendingPermissionStore.pending.contains(where: {
-                       $0.event.sessionId == sid && $0.event.toolUseId == toolUseId
-                   }) {
+                   [.postToolUse, .postToolUseFailure, .stop, .userPromptSubmit].contains(eventType),
+                   self.pendingPermissionStore.pending.contains(where: { $0.event.sessionId == sid }) {
                     self.pendingPermissionStore.dismissForSession(sid)
                 }
 
