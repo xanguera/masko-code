@@ -8,9 +8,11 @@ struct SettingsView: View {
     @State private var showUninstallConfirm = false
     @State private var videoCacheSize: Int64 = 0
     @State private var ideExtensionInstalled = false
+    @State private var ideStatuses: [ExtensionInstaller.IDEStatus] = []
     @AppStorage("ideExtensionEnabled") private var ideExtensionEnabled = true
     @State private var extensionError: String?
     @State private var extensionBusy = false
+    @State private var installingIDE: String?  // command of IDE currently being installed
 
     private var appVersion: String {
         Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown"
@@ -69,54 +71,78 @@ struct SettingsView: View {
             }
 
             Section {
+                // Per-IDE status list
+                ForEach(ideStatuses) { ide in
+                    HStack {
+                        Text(ide.name)
+                            .foregroundColor(ide.isDetected ? Constants.textPrimary : Constants.textMuted.opacity(0.5))
+                        Spacer()
+                        if ide.isInstalled {
+                            HStack(spacing: 4) {
+                                Image(systemName: "checkmark.circle.fill")
+                                    .foregroundColor(.green)
+                                    .font(.system(size: 12))
+                                Text("Installed")
+                                    .foregroundColor(Constants.textMuted)
+                            }
+                        } else if ide.isDetected {
+                            if installingIDE == ide.command {
+                                ProgressView()
+                                    .controlSize(.small)
+                            } else {
+                                Button {
+                                    installExtension(command: ide.command)
+                                } label: {
+                                    Text("Install")
+                                        .font(Constants.heading(size: 11, weight: .semibold))
+                                        .foregroundColor(.white)
+                                        .padding(.horizontal, 10)
+                                        .padding(.vertical, 3)
+                                        .background(Constants.orangePrimary)
+                                        .clipShape(Capsule())
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        } else {
+                            Text("Not detected")
+                                .foregroundColor(Constants.textMuted.opacity(0.5))
+                        }
+                    }
+                    .font(.system(size: 13))
+                }
+
+                // Actions
                 if extensionBusy {
                     HStack {
-                        Text("Terminal Switching")
-                            .foregroundColor(Constants.textPrimary)
                         Spacer()
                         ProgressView()
                             .controlSize(.small)
+                        Text("Installing...")
+                            .font(.system(size: 12))
+                            .foregroundColor(Constants.textMuted)
+                        Spacer()
                     }
                 } else if ideExtensionInstalled {
-                    HStack {
-                        Text("Terminal Switching")
-                            .foregroundColor(Constants.textPrimary)
-                        Spacer()
-                        Circle().fill(Color.green).frame(width: 8, height: 8)
-                        Text("Active").foregroundColor(Constants.textMuted)
-                    }
-                    Toggle("Enable", isOn: $ideExtensionEnabled)
+                    Toggle("Enable terminal switching", isOn: $ideExtensionEnabled)
                         .foregroundColor(Constants.textPrimary)
-                    Button(action: uninstallExtension) {
-                        Text("Uninstall")
-                            .foregroundColor(Color(.sRGB, red: 220/255, green: 38/255, blue: 38/255))
-                    }
-                    .buttonStyle(.plain)
-                } else {
-                    let ides = ExtensionInstaller.availableIDEs()
-                    if !ides.isEmpty {
-                        HStack {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text("Terminal Switching")
-                                    .foregroundColor(Constants.textPrimary)
-                                Text("Jump to the exact terminal tab in \(ides.map(\.name).joined(separator: ", "))")
-                                    .font(.system(size: 11))
-                                    .foregroundColor(Constants.textMuted)
-                            }
-                            Spacer()
-                            Button(action: installExtension) {
-                                Text("Enable")
-                                    .font(Constants.heading(size: 12, weight: .semibold))
-                                    .foregroundColor(.white)
-                                    .padding(.horizontal, 14)
-                                    .padding(.vertical, 6)
-                                    .background(Constants.orangePrimary)
-                                    .clipShape(Capsule())
-                            }
-                            .buttonStyle(.plain)
+                    HStack(spacing: 12) {
+                        Button(action: installExtension) {
+                            Text("Reinstall")
+                                .foregroundColor(Constants.orangePrimary)
                         }
+                        .buttonStyle(.plain)
+                        Button(action: uninstallExtension) {
+                            Text("Uninstall")
+                                .foregroundColor(Color(.sRGB, red: 220/255, green: 38/255, blue: 38/255))
+                        }
+                        .buttonStyle(.plain)
                     }
+                } else if ideStatuses.contains(where: { $0.isDetected }) {
+                    Text("Install the extension to jump to the exact terminal tab running Claude Code.")
+                        .font(.system(size: 11))
+                        .foregroundColor(Constants.textMuted)
                 }
+
                 if let error = extensionError {
                     Text(error).font(.system(size: 11)).foregroundColor(.red)
                 }
@@ -243,7 +269,7 @@ struct SettingsView: View {
         .onAppear {
             isHookEnabled = HookInstaller.isRegistered()
             videoCacheSize = VideoCache.shared.cacheSize
-            ideExtensionInstalled = ExtensionInstaller.isInstalled()
+            refreshIDEStatuses()
         }
         .alert("Uninstall Masko?", isPresented: $showUninstallConfirm) {
             Button("Cancel", role: .cancel) {}
@@ -279,15 +305,21 @@ struct SettingsView: View {
         return String(format: "%.0f MB", mb)
     }
 
+    private func refreshIDEStatuses() {
+        ideStatuses = ExtensionInstaller.allIDEStatuses()
+        ideExtensionInstalled = ideStatuses.contains { $0.isInstalled }
+    }
+
     private func installExtension() {
         extensionError = nil
         extensionBusy = true
         DispatchQueue.global(qos: .userInitiated).async {
             do {
                 try ExtensionInstaller.install()
-                let installed = ExtensionInstaller.isInstalled()
+                let statuses = ExtensionInstaller.allIDEStatuses()
                 DispatchQueue.main.async {
-                    ideExtensionInstalled = installed
+                    ideStatuses = statuses
+                    ideExtensionInstalled = statuses.contains { $0.isInstalled }
                     ideExtensionEnabled = true
                     extensionBusy = false
                     ExtensionInstaller.triggerPermissionPrompt()
@@ -301,12 +333,37 @@ struct SettingsView: View {
         }
     }
 
+    private func installExtension(command: String) {
+        extensionError = nil
+        installingIDE = command
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                try ExtensionInstaller.install(command: command)
+                let statuses = ExtensionInstaller.allIDEStatuses()
+                DispatchQueue.main.async {
+                    ideStatuses = statuses
+                    ideExtensionInstalled = statuses.contains { $0.isInstalled }
+                    ideExtensionEnabled = true
+                    installingIDE = nil
+                    ExtensionInstaller.triggerPermissionPrompt()
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    extensionError = error.localizedDescription
+                    installingIDE = nil
+                }
+            }
+        }
+    }
+
     private func uninstallExtension() {
         extensionError = nil
         extensionBusy = true
         DispatchQueue.global(qos: .userInitiated).async {
             ExtensionInstaller.uninstall()
+            let statuses = ExtensionInstaller.allIDEStatuses()
             DispatchQueue.main.async {
+                ideStatuses = statuses
                 ideExtensionInstalled = false
                 ideExtensionEnabled = false
                 extensionBusy = false

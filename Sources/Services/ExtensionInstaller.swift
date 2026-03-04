@@ -46,7 +46,41 @@ enum ExtensionInstaller {
                 "/Applications/Windsurf.app/Contents/Resources/app/bin/windsurf",
             ]
         ),
+        (
+            "com.google.antigravity",
+            "antigravity",
+            "antigravity",
+            [
+                "/usr/local/bin/antigravity",
+                "/Applications/Antigravity.app/Contents/Resources/app/bin/antigravity",
+            ]
+        ),
     ]
+
+    // MARK: - IDE Status
+
+    struct IDEStatus: Identifiable {
+        let name: String
+        let command: String
+        let isDetected: Bool
+        let isInstalled: Bool
+        var id: String { command }
+    }
+
+    /// Returns per-IDE detection and installation status for all supported IDEs.
+    static func allIDEStatuses() -> [IDEStatus] {
+        ideConfigs.map { ide in
+            let cliPath = resolveCommand(ide)
+            let detected = cliPath != nil
+            let installed = detected && extensionInstalled(cliPath: cliPath!)
+            return IDEStatus(
+                name: ideName(for: ide.command),
+                command: ide.command,
+                isDetected: detected,
+                isInstalled: installed
+            )
+        }
+    }
 
     // MARK: - Public API
 
@@ -93,6 +127,31 @@ enum ExtensionInstaller {
         }
 
         if !installed {
+            throw ExtensionError.noIDEFound
+        }
+    }
+
+    /// Install the extension into a single IDE by command name
+    static func install(command: String) throws {
+        let vsixPath = bundledVSIXPath()
+        guard FileManager.default.fileExists(atPath: vsixPath) else {
+            throw ExtensionError.vsixNotFound
+        }
+
+        guard let ide = ideConfigs.first(where: { $0.command == command }),
+              let cliPath = resolveCommand(ide) else {
+            throw ExtensionError.noIDEFound
+        }
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: cliPath)
+        process.arguments = ["--install-extension", vsixPath, "--force"]
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+        process.waitUntilExit()
+
+        guard process.terminationStatus == 0 else {
             throw ExtensionError.noIDEFound
         }
     }
@@ -207,6 +266,7 @@ enum ExtensionInstaller {
         case "code": return "VS Code"
         case "code-insiders": return "VS Code Insiders"
         case "windsurf": return "Windsurf"
+        case "antigravity": return "Antigravity"
         default: return command
         }
     }
