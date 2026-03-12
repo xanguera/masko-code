@@ -33,7 +33,7 @@
 | 📋 | **Plan review** | Review and approve plans without opening your terminal |
 | 📊 | **Session tracking** | Monitor active sessions, subagents, and status at a glance |
 | 🔔 | **Notification dashboard** | Priority levels, resolution tracking, color-coded activity feed |
-| 🖥️ | **Find the right terminal** | Jump to the correct terminal tab — supports VS Code, Cursor, Zed, Nova, JetBrains |
+| 🖥️ | **Find the right terminal** | Jump to the correct terminal tab — supports 13 terminals and IDEs including iTerm2, Ghostty, VS Code, Cursor, and more |
 | 🔀 | **Session switcher** | Double-tap `⌘` to switch between Claude Code sessions |
 | 😴 | **Snooze** | Right-click to hide the mascot for 15 min, 1 hour, or indefinitely |
 | ↔️ | **Resizable** | Drag to resize or pick a preset (S / M / L / XL) from the context menu |
@@ -84,14 +84,17 @@ Right-click the mascot to open the **context menu** — snooze, resize, or close
 
 The default Masko fox is included. Want your own character? Create one on [masko.ai](https://masko.ai) with AI-generated animations for every state (idle, working, attention). Export and load it into the desktop app in one click.
 
-## IDE Extensions
+## Supported Terminals & IDEs
 
-Masko can focus the exact terminal tab running Claude Code. Supported editors:
+Masko works with any terminal that runs Claude Code. Terminal focus (`⌘M`) support varies by app:
 
-- **VS Code** / **Cursor** — extension in `vscode-extension/`, installed automatically during onboarding
-- **Zed**, **Nova**, **JetBrains IDEs** — supported via AppleScript integration
+| Level | App | How |
+|---|---|---|
+| **Exact tab** | VS Code, VS Code Insiders, Cursor, Windsurf, Antigravity | IDE extension (auto-installed) |
+| **Exact tab** | iTerm2, Terminal.app | AppleScript TTY matching |
+| **App focus** | Ghostty, Kitty, WezTerm, Alacritty, Warp, Zed | Process activation |
 
-Click a session in the dashboard or click the mascot overlay to jump to the right terminal tab.
+Click a session in the dashboard or click the mascot overlay to jump to the right terminal.
 
 ## Requirements
 
