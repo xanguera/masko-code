@@ -120,7 +120,7 @@ enum HookInstaller {
         try writeSettings(settings)
     }
 
-    private static let scriptVersion = "# version: 13"
+    private static let scriptVersion = "# version: 14"
 
     /// Create or update hook-sender.sh
     static func ensureScriptExists() throws {
@@ -177,11 +177,20 @@ enum HookInstaller {
         fi
 
         if [ "$EVENT_NAME" = "PermissionRequest" ]; then
-            # Blocking: wait indefinitely for user decision/answer
-            RESPONSE=$(curl -s -w "\\n%{http_code}" -X POST \\
+            # Blocking: wait for user decision. Run curl in background so we can
+            # trap SIGTERM/SIGHUP and kill it — when Claude Code resolves a permission
+            # from the terminal, it kills this script, and we must ensure curl dies too
+            # (otherwise the TCP connection stays open and the desktop bubble sticks).
+            TMPFILE=$(mktemp /tmp/masko-hook.XXXXXX)
+            curl -s -w "\\n%{http_code}" -X POST \\
               -H "Content-Type: application/json" -d "$INPUT" \\
               "http://localhost:\(Constants.serverPort)/hook" \\
-              --connect-timeout 2 2>/dev/null)
+              --connect-timeout 2 >"$TMPFILE" 2>/dev/null &
+            CURL_PID=$!
+            trap 'kill $CURL_PID 2>/dev/null; rm -f "$TMPFILE"; exit 0' TERM HUP INT
+            wait $CURL_PID
+            RESPONSE=$(cat "$TMPFILE")
+            rm -f "$TMPFILE"
             HTTP_CODE=$(echo "$RESPONSE" | tail -1)
             BODY=$(echo "$RESPONSE" | sed '$d')
             [ -n "$BODY" ] && echo "$BODY"

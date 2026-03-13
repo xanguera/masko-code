@@ -302,7 +302,13 @@ final class OverlayManager {
         let active = sessionStore.activeSessions
         let isWorking = active.contains { $0.phase == .running }
         let isIdle = active.allSatisfy { $0.phase == .idle } || active.isEmpty
-        let isAlert = pendingPermissionStore.count > 0
+        // Only alert if a pending permission belongs to a session that's still active
+        // (collapsed/ended sessions lose priority to working sessions)
+        let activeSessionIds = Set(active.map(\.id))
+        let isAlert = pendingPermissionStore.pending.contains { perm in
+            guard let sid = perm.event.sessionId else { return false }
+            return activeSessionIds.contains(sid)
+        }
         let isCompacting = active.contains { $0.isCompacting }
         let sessionCount = active.count
 

@@ -95,7 +95,7 @@ final class AppStore {
                         sessionId: event.sessionId ?? "",
                         projectName: event.projectName ?? "Project"
                     )
-                    self.hotkeyManager.shared.hasSessionFinishedToast = true
+                    self.syncActiveCard()
                     // Trigger overlay panel reposition after SwiftUI renders the toast
                     self.onToastChanged?()
                 }
@@ -135,8 +135,8 @@ final class AppStore {
             // Auto-dismiss or refresh session switcher when sessions change
             if self.sessionSwitcherStore.isActive {
                 if activeCount < 2 {
-                    self.hotkeyManager.shared.sessionSwitcherActive = false
                     self.sessionSwitcherStore.close()
+                    self.syncActiveCard()
                     self.onSessionSwitcherDismiss?()
                 } else {
                     self.sessionSwitcherStore.refresh(sessions: self.sessionStore.activeSessions)
@@ -145,74 +145,35 @@ final class AppStore {
             }
         }
 
-        // Wire pending permission count → hotkey manager
+        // Wire pending permission count → sync active card
         pendingPermissionStore.onPendingCountChange = { [weak self] in
-            guard let self else { return }
-            self.hotkeyManager.hasPendingPermissions = !self.pendingPermissionStore.pending.isEmpty
+            self?.syncActiveCard()
         }
 
-        // Wire session finished toast dismiss → hotkey manager + panel reposition
+        // Wire session finished toast dismiss → sync active card + panel reposition
         sessionFinishedStore.onDismiss = { [weak self] in
-            self?.hotkeyManager.shared.hasSessionFinishedToast = false
+            self?.syncActiveCard()
             self?.onToastChanged?()
         }
 
-        // Wire hotkey manager — ⌘N selects Nth button within topmost card
-        hotkeyManager.onSelectPermission = { [weak self] index in
-            guard let self else { return }
-            guard !self.pendingPermissionStore.pending.isEmpty else { return }
-            if self.hotkeyManager.selectedButtonIndex == index {
-                self.hotkeyManager.selectedButtonIndex = nil
-            } else {
-                self.hotkeyManager.selectedButtonIndex = index
-            }
-        }
-
-        // Wire hotkey manager — ⌘Enter confirms the selected button or dismisses toast
-        hotkeyManager.onConfirmPermission = { [weak self] in
-            guard let self else { return }
-            if self.pendingPermissionStore.pending.isEmpty, self.sessionFinishedStore.current != nil {
-                self.sessionFinishedStore.dismiss()
-            } else {
-                self.hotkeyManager.confirmTrigger += 1
-            }
-        }
-
-        // Wire hotkey manager — ⌘Esc dismisses (denies) topmost non-collapsed permission
-        hotkeyManager.onDismissPermission = { [weak self] in
-            guard let self else { return }
-            let reversed = Array(self.pendingPermissionStore.pending.reversed())
-            guard let topPerm = reversed.first(where: { !self.pendingPermissionStore.collapsed.contains($0.id) }) else { return }
-            self.pendingPermissionStore.resolve(id: topPerm.id, decision: .deny)
-        }
-
-        // Wire hotkey manager — ⌘L toggles collapse: collapse topmost, or expand if all collapsed
-        hotkeyManager.onCollapsePermission = { [weak self] in
-            guard let self else { return }
-            let reversed = Array(self.pendingPermissionStore.pending.reversed())
-            if let topNonCollapsed = reversed.first(where: { !self.pendingPermissionStore.collapsed.contains($0.id) }) {
-                self.pendingPermissionStore.collapse(id: topNonCollapsed.id)
-            } else if let topCollapsed = reversed.first {
-                self.pendingPermissionStore.expand(id: topCollapsed.id)
-            }
-        }
         // Set initial count
         hotkeyManager.activeSessionCount = sessionStore.activeSessions.count
 
         // Wire session switcher tap-to-confirm (clicked a row)
         sessionSwitcherStore.onTapConfirm = { [weak self] session in
             guard let self else { return }
-            self.hotkeyManager.shared.sessionSwitcherActive = false
+            self.sessionSwitcherStore.close()
+            self.syncActiveCard()
             IDETerminalFocus.focusSession(session)
             self.onSessionSwitcherDismiss?()
         }
 
-        // Wire hotkey manager — session switcher callbacks
+        // Wire hotkey manager — session switcher open (double-tap Cmd)
         hotkeyManager.onSessionSwitcherOpen = { [weak self] in
             guard let self else { return }
             let active = self.sessionStore.activeSessions
             self.sessionSwitcherStore.open(sessions: active)
-            self.hotkeyManager.shared.sessionSwitcherActive = true
+            self.syncActiveCard()
             self.onSessionSwitcherShow?()
         }
 
@@ -226,36 +187,81 @@ final class AppStore {
             self?.onSessionSwitcherUpdate?()
         }
 
-        hotkeyManager.onSessionSwitcherSelect = { [weak self] index in
+        // Wire hotkey manager — ⌘N selects Nth item within topmost card
+        hotkeyManager.onSelect = { [weak self] index in
             guard let self else { return }
-            self.sessionSwitcherStore.selectIndex(index)
-            // Immediately confirm — Cmd+N is a direct jump, not just selection
-            self.hotkeyManager.shared.sessionSwitcherActive = false
-            if let session = self.sessionSwitcherStore.confirm() {
-                IDETerminalFocus.focusSession(session)
+            switch self.hotkeyManager.activeCard {
+            case .sessionSwitcher:
+                self.sessionSwitcherStore.selectIndex(index)
+                // Immediately confirm — Cmd+N is a direct jump
+                if let session = self.sessionSwitcherStore.confirm() {
+                    IDETerminalFocus.focusSession(session)
+                }
+                self.syncActiveCard()
+                self.onSessionSwitcherDismiss?()
+            case .permission:
+                guard !self.pendingPermissionStore.pending.isEmpty else { return }
+                if self.hotkeyManager.selectedButtonIndex == index {
+                    self.hotkeyManager.selectedButtonIndex = nil
+                } else {
+                    self.hotkeyManager.selectedButtonIndex = index
+                }
+            case .toast, .none:
+                break
             }
-            self.onSessionSwitcherDismiss?()
         }
 
-        hotkeyManager.onSessionSwitcherConfirm = { [weak self] in
+        // Wire hotkey manager — ⌘Enter confirms the topmost card
+        hotkeyManager.onConfirm = { [weak self] in
             guard let self else { return }
-            self.hotkeyManager.shared.sessionSwitcherActive = false
-            if let session = self.sessionSwitcherStore.confirm() {
-                IDETerminalFocus.focusSession(session)
+            switch self.hotkeyManager.activeCard {
+            case .sessionSwitcher:
+                if let session = self.sessionSwitcherStore.confirm() {
+                    IDETerminalFocus.focusSession(session)
+                }
+                self.syncActiveCard()
+                self.onSessionSwitcherDismiss?()
+            case .permission:
+                self.hotkeyManager.confirmTrigger += 1
+            case .toast:
+                self.sessionFinishedStore.dismiss()
+            case .none:
+                break
             }
-            self.onSessionSwitcherDismiss?()
         }
 
-        hotkeyManager.onSessionSwitcherCancel = { [weak self] in
+        // Wire hotkey manager — Esc/⌘Esc dismisses the topmost card
+        hotkeyManager.onDismiss = { [weak self] in
             guard let self else { return }
-            self.hotkeyManager.shared.sessionSwitcherActive = false
-            self.sessionSwitcherStore.close()
-            self.onSessionSwitcherDismiss?()
+            switch self.hotkeyManager.activeCard {
+            case .sessionSwitcher:
+                self.sessionSwitcherStore.close()
+                self.syncActiveCard()
+                self.onSessionSwitcherDismiss?()
+            case .permission:
+                let reversed = Array(self.pendingPermissionStore.pending.reversed())
+                guard let topPerm = reversed.first(where: { !self.pendingPermissionStore.collapsed.contains($0.id) }) else { return }
+                self.pendingPermissionStore.resolve(id: topPerm.id, decision: .deny)
+            case .toast:
+                self.sessionFinishedStore.dismiss()
+            case .none:
+                break
+            }
         }
 
-        // Wire hotkey manager — toggle focus via configurable shortcut
-        // When permissions are pending, ⌘M focuses the terminal (same as terminal button).
-        // When no permissions, toggles the dashboard window.
+        // Wire hotkey manager — ⌘L toggles collapse: collapse topmost, or expand if all collapsed
+        hotkeyManager.onCollapsePermission = { [weak self] in
+            guard let self else { return }
+            let reversed = Array(self.pendingPermissionStore.pending.reversed())
+            if let topNonCollapsed = reversed.first(where: { !self.pendingPermissionStore.collapsed.contains($0.id) }) {
+                self.pendingPermissionStore.collapse(id: topNonCollapsed.id)
+            } else if let topCollapsed = reversed.first {
+                self.pendingPermissionStore.expand(id: topCollapsed.id)
+            }
+        }
+
+        // Wire hotkey manager — toggle focus via configurable shortcut (⌘M)
+        // Focuses the terminal of the topmost card's session, or toggles dashboard.
         hotkeyManager.onToggleFocus = { [weak self] in
             guard let self else { return }
             let reversed = Array(self.pendingPermissionStore.pending.reversed())
@@ -270,6 +276,8 @@ final class AppStore {
                       let session = self.sessionStore.sessions.first(where: { $0.id == toast.sessionId }) {
                 IDETerminalFocus.focusSession(session)
                 self.sessionFinishedStore.dismiss()
+            } else if let session = self.sessionStore.sessions.last(where: { $0.terminalPid != nil }) {
+                IDETerminalFocus.focusSession(session)
             } else {
                 self.hotkeyManager.toggleFocus()
             }
@@ -285,6 +293,20 @@ final class AppStore {
                 self.notificationStore.updateResolution(notification.id, outcome: outcome)
                 break
             }
+        }
+    }
+
+    /// Recompute which overlay card has priority and sync to the hotkey shared state.
+    /// Call whenever any card's visibility changes.
+    func syncActiveCard() {
+        if sessionSwitcherStore.isActive {
+            hotkeyManager.activeCard = .sessionSwitcher
+        } else if !pendingPermissionStore.pending.isEmpty {
+            hotkeyManager.activeCard = .permission
+        } else if sessionFinishedStore.current != nil {
+            hotkeyManager.activeCard = .toast
+        } else {
+            hotkeyManager.activeCard = .none
         }
     }
 

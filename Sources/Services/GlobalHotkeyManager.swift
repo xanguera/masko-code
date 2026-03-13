@@ -2,22 +2,27 @@ import AppKit
 import ApplicationServices
 import Carbon.HIToolbox
 
+// MARK: - Unified overlay card priority
+
+/// The active overlay card — determines which card owns keyboard shortcuts.
+/// Priority: sessionSwitcher > permission > toast > none.
+enum ActiveCard: Int32 {
+    case none = 0
+    case toast = 1
+    case permission = 2
+    case sessionSwitcher = 3
+}
+
 // MARK: - Thread-safe state shared between main actor and CGEvent callback
 
 /// Holds values read/written from the CGEvent callback thread.
 /// All access is via atomic-safe types (Bool, Int64, UInt64).
 final class HotkeySharedState: @unchecked Sendable {
-    /// Whether pending permissions exist — controls Cmd+1-9 interception.
-    var hasPendingPermissions = false
-
-    /// Whether a session-finished toast is visible — controls Cmd+Enter interception.
-    var hasSessionFinishedToast = false
+    /// The highest-priority visible overlay card — controls which card owns shortcuts.
+    var activeCard: ActiveCard = .none
 
     /// Number of active sessions.
     var activeSessionCount: Int32 = 0
-
-    /// Whether the session switcher overlay is currently showing.
-    var sessionSwitcherActive = false
 
     /// Whether the Cmd key is currently held.
     var cmdHeld = false
@@ -58,19 +63,19 @@ final class GlobalHotkeyManager {
     /// True when the CGEvent tap is active (Accessibility permission granted).
     private(set) var isActive = false
 
-    // MARK: - Callbacks (set by AppStore / MaskoDesktopApp)
+    // MARK: - Unified callbacks (routed by activeCard priority)
 
-    /// Called when the focus-toggle shortcut is pressed.
+    /// Called when the focus-toggle shortcut is pressed (⌘M).
     var onToggleFocus: (() -> Void)?
 
-    /// Called when ⌘N selects the Nth permission (0-indexed).
-    var onSelectPermission: ((Int) -> Void)?
+    /// Called when ⌘Enter confirms the topmost card (switcher confirm / permission allow / toast dismiss).
+    var onConfirm: (() -> Void)?
 
-    /// Called when ⌘Enter confirms the selected permission.
-    var onConfirmPermission: (() -> Void)?
+    /// Called when ⌘Esc or Esc dismisses the topmost card (switcher cancel / permission deny / toast dismiss).
+    var onDismiss: (() -> Void)?
 
-    /// Called when ⌘Esc dismisses (skips/denies) the topmost permission.
-    var onDismissPermission: (() -> Void)?
+    /// Called when ⌘N selects the Nth item within the topmost card (0-indexed).
+    var onSelect: ((Int) -> Void)?
 
     /// Called when ⌘L collapses (later) the topmost non-collapsed permission.
     var onCollapsePermission: (() -> Void)?
@@ -78,20 +83,9 @@ final class GlobalHotkeyManager {
     /// Called when double-tap Cmd opens the session switcher.
     var onSessionSwitcherOpen: (() -> Void)?
 
-    /// Called when arrow key cycles to next session (while switcher active).
+    /// Called when arrow key cycles to next/previous session (while switcher active).
     var onSessionSwitcherNext: (() -> Void)?
-
-    /// Called when arrow key cycles to previous session (while switcher active).
     var onSessionSwitcherPrev: (() -> Void)?
-
-    /// Called when Enter or double-tap Cmd confirms selection (while switcher active).
-    var onSessionSwitcherConfirm: (() -> Void)?
-
-    /// Called when Esc cancels the switcher.
-    var onSessionSwitcherCancel: (() -> Void)?
-
-    /// Called when Cmd+N selects Nth session in the switcher (0-indexed).
-    var onSessionSwitcherSelect: ((Int) -> Void)?
 
     // MARK: - Private
 
@@ -99,11 +93,11 @@ final class GlobalHotkeyManager {
     private var runLoopSource: CFRunLoopSource?
     private var previousApp: NSRunningApplication?
 
-    // MARK: - Pending permissions (bridged to shared state)
+    // MARK: - Active card (bridged to shared state)
 
-    var hasPendingPermissions: Bool {
-        get { shared.hasPendingPermissions }
-        set { shared.hasPendingPermissions = newValue }
+    var activeCard: ActiveCard {
+        get { shared.activeCard }
+        set { shared.activeCard = newValue }
     }
 
     var activeSessionCount: Int {
@@ -111,10 +105,9 @@ final class GlobalHotkeyManager {
         set { shared.activeSessionCount = Int32(newValue) }
     }
 
-    /// Whether the session switcher overlay is currently showing — used to suppress permission badges.
+    /// Whether the session switcher overlay is currently showing.
     var isSessionSwitcherActive: Bool {
-        get { shared.sessionSwitcherActive }
-        set { shared.sessionSwitcherActive = newValue }
+        shared.activeCard == .sessionSwitcher
     }
 
     // MARK: - Configurable shortcut (stored in UserDefaults)
@@ -369,11 +362,11 @@ private func globalHotkeyCallback(
                 let now = mach_absolute_time()
                 let elapsed = state.lastCmdReleaseTime > 0 ? machTimeToMs(now - state.lastCmdReleaseTime) : UInt64.max
 
-                if state.sessionSwitcherActive {
+                if state.activeCard == .sessionSwitcher {
                     // Double-tap while switcher open → confirm
                     if elapsed < 400 {
                         state.lastCmdReleaseTime = 0
-                        DispatchQueue.main.async { manager.onSessionSwitcherConfirm?() }
+                        DispatchQueue.main.async { manager.onConfirm?() }
                     } else {
                         state.lastCmdReleaseTime = now
                     }
@@ -406,6 +399,8 @@ private func globalHotkeyCallback(
         state.cmdWasSolitary = false
     }
 
+    let card = state.activeCard
+
     // Check focus-toggle shortcut (configurable, default ⌘M)
     let requiredMods = CGEventFlags(rawValue: state.modifiersRaw)
     let relevantFlags: CGEventFlags = [.maskCommand, .maskShift, .maskControl, .maskAlternate]
@@ -417,8 +412,8 @@ private func globalHotkeyCallback(
         return nil // consume
     }
 
-    // --- Session switcher active: arrow keys, Esc ---
-    if state.sessionSwitcherActive {
+    // --- Session switcher: arrow keys, Tab (only when switcher is the active card) ---
+    if card == .sessionSwitcher {
         // Arrow Down or Arrow Right: next session
         if keyCode == 125 || keyCode == 124 {
             DispatchQueue.main.async { manager.onSessionSwitcherNext?() }
@@ -429,7 +424,7 @@ private func globalHotkeyCallback(
             DispatchQueue.main.async { manager.onSessionSwitcherPrev?() }
             return nil
         }
-        // Tab: next session (Shift+Tab: previous) — only when switcher is open
+        // Tab: next session (Shift+Tab: previous)
         if keyCode == 48 {
             if flags.contains(.maskShift) {
                 DispatchQueue.main.async { manager.onSessionSwitcherPrev?() }
@@ -438,11 +433,12 @@ private func globalHotkeyCallback(
             }
             return nil
         }
-        // Esc: cancel
-        if keyCode == 53 {
-            DispatchQueue.main.async { manager.onSessionSwitcherCancel?() }
-            return nil
-        }
+    }
+
+    // Esc (no modifiers): dismiss the topmost card
+    if keyCode == 53 && !flags.contains(.maskCommand) && card != .none {
+        DispatchQueue.main.async { manager.onDismiss?() }
+        return nil
     }
 
     // Cmd-only shortcuts (no Shift/Ctrl/Option)
@@ -451,43 +447,31 @@ private func globalHotkeyCallback(
        !flags.contains(.maskControl) &&
        !flags.contains(.maskAlternate) {
 
-        // ⌘1-9: session switcher selection (takes priority when switcher is active)
+        // ⌘1-9: select Nth item within topmost card
         let digitKeyCodes: [Int64: Int] = [
             18: 1, 19: 2, 20: 3, 21: 4, 23: 5,
             22: 6, 26: 7, 28: 8, 25: 9,
         ]
-        if let digit = digitKeyCodes[keyCode] {
-            if state.sessionSwitcherActive {
-                DispatchQueue.main.async { manager.onSessionSwitcherSelect?(digit - 1) }
-                return nil
-            }
-            if state.hasPendingPermissions {
-                DispatchQueue.main.async { manager.onSelectPermission?(digit - 1) }
-                return nil
-            }
+        if let digit = digitKeyCodes[keyCode], card != .none {
+            DispatchQueue.main.async { manager.onSelect?(digit - 1) }
+            return nil
         }
 
-        // ⌘Enter: confirm session switcher or permission
-        if keyCode == 36 {
-            if state.sessionSwitcherActive {
-                DispatchQueue.main.async { manager.onSessionSwitcherConfirm?() }
-                return nil
-            }
-            if state.hasPendingPermissions || state.hasSessionFinishedToast {
-                DispatchQueue.main.async { manager.onConfirmPermission?() }
-                return nil
-            }
+        // ⌘Enter: confirm the topmost card
+        if keyCode == 36, card != .none {
+            DispatchQueue.main.async { manager.onConfirm?() }
+            return nil
         }
 
-        // ⌘L: collapse (later) topmost non-collapsed permission
-        if keyCode == 37, state.hasPendingPermissions {
+        // ⌘L: collapse permission (only when a permission is on top)
+        if keyCode == 37, card == .permission {
             DispatchQueue.main.async { manager.onCollapsePermission?() }
-            return nil // consume
+            return nil
         }
 
-        // ⌘Esc: dismiss permission
-        if keyCode == 53, state.hasPendingPermissions {
-            DispatchQueue.main.async { manager.onDismissPermission?() }
+        // ⌘Esc: dismiss the topmost card
+        if keyCode == 53, card != .none {
+            DispatchQueue.main.async { manager.onDismiss?() }
             return nil
         }
     }
