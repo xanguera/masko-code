@@ -295,122 +295,288 @@ To replicate this behavior in another project:
 
 ---
 
-## Alternative: Replacing the HTTP Server with macOS Notifications
+## Replicating the Behavior with macOS System Notifications
 
-This section evaluates whether the same behavior could be achieved using the macOS notification system instead of a local HTTP server.
+**Goal:** show a macOS notification whenever Claude Code needs attention, and when the user clicks it, focus the exact terminal or IDE window where that session is running.
 
-### What the HTTP server actually does
-
-Before evaluating alternatives it helps to separate the server's two distinct jobs:
-
-| Job | Description |
-|-----|-------------|
-| **Event ingestion** | Receive events from the hook script (one-way, fire-and-forget for most events) |
-| **Permission blocking** | Hold a connection open until the user decides, then reply to unblock Claude Code (bidirectional, blocking) |
-
-These two jobs have different requirements, and a notification-only approach handles them very differently.
-
-### Can macOS notifications replace event ingestion?
-
-For most events (everything except `PermissionRequest`) the hook script just needs to hand data to the app and move on. Several macOS-native mechanisms can do this without a TCP server:
-
-**`NSDistributedNotificationCenter`**
-The system-wide notification bus (`notifyd`) already runs on every Mac. An app can subscribe to a named notification and receive a dictionary payload. From a bash script you can post to it via `osascript`:
-```bash
-osascript -e "do shell script \"\"" # not ideal
-```
-In practice, posting from bash requires either a tiny compiled helper binary or going through `osascript`, which adds overhead. Payload size is also limited (a few KB) and the API does not guarantee delivery if the receiving app is not running.
-
-**Unix domain socket**
-A UNIX socket file (e.g. `~/.masko-desktop/hook.sock`) works like the TCP server but without a port number and without going through the network stack. The hook script connects with `nc -U` or `curl --unix-socket`. This is arguably simpler than TCP and sidesteps port-conflict issues, but it is still a server — just not an HTTP one.
-
-**Named pipe (FIFO)**
-The hook script writes the event JSON to a FIFO file; the app reads from it in a background thread. Simple, zero dependencies, but strictly one-directional. Fine for fire-and-forget events; not usable for blocking permission requests.
-
-**File drop + FSEvents watch**
-The hook script writes each event to a temp file in a watched directory; the app uses `FSEvents` or `DispatchSource` to detect new files and process them. Similar tradeoffs to named pipes.
-
-**Verdict on event ingestion:** Yes, you could replace the HTTP server for plain event delivery using any of the above. A Unix domain socket is the closest drop-in replacement. `NSDistributedNotificationCenter` works but has payload size limits and no delivery guarantee.
+This is a well-scoped goal and is fully achievable. The blocking/interactive permission UI from this repo is not needed. Claude Code will auto-proceed on permission events (using its default behavior); the user is simply alerted and can switch to the right window immediately.
 
 ---
 
-### Can macOS notifications replace permission blocking?
+### What you still need (and what you don't)
 
-This is where a pure-notification approach breaks down.
+| Component | Still needed? | Notes |
+|-----------|--------------|-------|
+| Hook registration in `~/.claude/settings.json` | **Yes** | Identical to this repo — no way around it |
+| Process-tree walk for terminal/shell PIDs | **Yes** | This is how you know which window to focus |
+| Local HTTP server | **No** | Replaced by a Unix domain socket (simpler) |
+| Holding the connection open for permissions | **No** | Claude Code auto-proceeds; you just get notified |
+| Interactive permission overlay | **No** | The notification banner is the entire UI |
+| Session phase tracking | **Simplified** | Only need to know which sessions are active and their PIDs |
 
-The current system works because the hook script's `curl` call **does not return** until the app closes the HTTP connection. Claude Code waits for the hook to return before proceeding. The decision (allow/deny) is carried in the HTTP response status code.
+---
 
-macOS `UNUserNotificationCenter` notifications are **fire-and-forget from the sender's perspective**. There is no built-in mechanism to:
-- Block the sender until the user taps an action button
-- Send a structured response back to the originating process
-
-To replicate the blocking behavior you would still need a second IPC channel. A workable hybrid looks like this:
+### Architecture
 
 ```
+Claude Code (terminal)
+    │  fires hook
+    ▼
 hook-sender.sh
-  1. Write event JSON to Unix socket (or named pipe)       ← replaces POST /hook
-  2. For PermissionRequest: open a named pipe for response
-     e.g.  mkfifo /tmp/masko-response-$$
-           echo $response_pipe_path >> event
-  3. cat $response_pipe_path                               ← blocks here
-  4. Read "allow" or "deny" from pipe, exit with code
-
-App (Swift)
-  1. Reads event from socket
-  2. Shows UNUserNotification with "Allow" / "Deny" actions
-  3. UNUserNotificationCenterDelegate.didReceive() fires when user taps
-  4. Writes "allow" or "deny" to the named pipe path from the event
-  5. Hook script unblocks and exits
+    │  1. walk ppid chain → terminal_pid, shell_pid
+    │  2. inject into JSON
+    │  3. nc -U ~/.local/share/claude-notify/hook.sock
+    ▼
+background daemon (Swift / Python / Node)
+    │  reads event from Unix socket
+    │  stores: session_id → { terminal_pid, shell_pid, project_name }
+    │  if event warrants attention →
+    ▼
+UNUserNotificationCenter
+    │  banner: "Claude needs attention — <project_name>"
+    │  userInfo: { session_id, terminal_pid, shell_pid, terminal_app }
+    │  user clicks →
+    ▼
+UNUserNotificationCenterDelegate.didReceive()
+    │  reads terminal_pid + terminal_app from userInfo
+    ▼
+window focus
+    ├── iTerm2 / Terminal.app  →  AppleScript (focus exact tab by shell_pid)
+    ├── VS Code / Cursor / Windsurf  →  IDE extension API (focus tab by shell_pid)
+    └── other terminals  →  NSRunningApplication(processIdentifier: terminal_pid)?.activate()
 ```
 
-This works, but the notification subsystem is now only the user-facing alert layer. The actual blocking/response mechanism is a named pipe or Unix socket — which is still a custom IPC channel, just a simpler one than HTTP.
+---
+
+### Step-by-step implementation
+
+#### 1. Hook script (identical to this repo for PID walking)
+
+The hook script must still walk the process tree. The only change from this repo is the transport: instead of `curl http://localhost:49152/hook`, use a Unix socket.
+
+```bash
+#!/usr/bin/env bash
+SOCK="$HOME/.local/share/claude-notify/hook.sock"
+
+# Check daemon is alive
+[ -S "$SOCK" ] || exit 0
+
+# Walk ppid chain to find terminal and shell
+get_pids() {
+    local pid=$$ shell_pid="" term_pid=""
+    while [ "$pid" -gt 1 ]; do
+        local cmd; cmd=$(ps -o comm= -p "$pid" 2>/dev/null)
+        case "$cmd" in
+            zsh|bash|fish|sh)          shell_pid=$pid ;;
+            Terminal|iTerm2|WezTerm|kitty|\
+            Cursor|Code|Windsurf|ghostty|\
+            alacritty|Warp|Zed)        term_pid=$pid; break ;;
+        esac
+        pid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')
+    done
+    echo "$term_pid $shell_pid"
+}
+
+read -r term_pid shell_pid <<< "$(get_pids)"
+
+# Read event JSON from stdin (Claude Code writes it here)
+event_json=$(cat)
+
+# Inject PIDs and terminal app name
+term_app=$(ps -o comm= -p "$term_pid" 2>/dev/null)
+event_json=$(echo "$event_json" | jq \
+  --argjson tpid "${term_pid:-0}" \
+  --argjson spid "${shell_pid:-0}" \
+  --arg tapp "$term_app" \
+  '. + {terminal_pid: $tpid, shell_pid: $spid, terminal_app: $tapp}')
+
+# Fire-and-forget — never block Claude Code
+echo "$event_json" | nc -U "$SOCK" &
+```
+
+Register this script for the events you care about in `~/.claude/settings.json`:
+
+```json
+{
+  "hooks": {
+    "PermissionRequest": [{"matcher": "", "hooks": [{"type": "command", "command": "~/.local/share/claude-notify/hook.sh"}]}],
+    "Notification":      [{"matcher": "", "hooks": [{"type": "command", "command": "~/.local/share/claude-notify/hook.sh"}]}],
+    "Stop":              [{"matcher": "", "hooks": [{"type": "command", "command": "~/.local/share/claude-notify/hook.sh"}]}],
+    "SessionStart":      [{"matcher": "", "hooks": [{"type": "command", "command": "~/.local/share/claude-notify/hook.sh"}]}],
+    "SessionEnd":        [{"matcher": "", "hooks": [{"type": "command", "command": "~/.local/share/claude-notify/hook.sh"}]}]
+  }
+}
+```
+
+You can add more event types, but the above cover the attention-relevant signals.
+
+> **Note on `PermissionRequest`:** because the hook script no longer blocks, Claude Code will apply its default permission behavior (typically deny) and keep running. The notification tells you what happened but you are not gating the action. If you need to actually approve/deny tools interactively, the full HTTP + blocking approach from this repo is required.
 
 ---
 
-### Limitations of using macOS notifications as the primary UI
+#### 2. Background daemon: receive events and track sessions
 
-Even if the IPC problem is solved, using `UNUserNotificationCenter` as the main attention UI has real constraints:
+A small always-running process listens on the Unix socket, maintains a session map, and triggers notifications. Swift is the natural choice on macOS for `UNUserNotificationCenter`, but Python with `terminal-notifier` or a Rust binary work too.
 
-| Limitation | Impact |
-|------------|--------|
-| **Action buttons are text-only, max ~4** | Cannot show a numbered list of tool options like the current prompt does |
-| **No interactive input** | User cannot type a custom response |
-| **Notification grouping / collapsing** | Multiple pending permissions can get stacked and hidden |
-| **Do Not Disturb / Focus mode** | Notifications can be suppressed entirely |
-| **Banner auto-dismiss** | If the user doesn't act quickly, the banner disappears (though it stays in Notification Center) |
-| **Cannot update a delivered notification** | If the session ends while a permission is pending, you cannot retract the notification |
-| **No rich layout** | Cannot render the tool name, arguments, or multi-option selection UI |
-| **Requires notification permission from the user** | The app must request and be granted notification authorization |
+**Session map** (kept in memory, optionally persisted to a JSON file):
+```
+session_id → {
+    terminal_pid:   Int,
+    shell_pid:      Int,
+    terminal_app:   String,   // "iTerm2", "Terminal", "Cursor", etc.
+    project_name:   String,   // last path component of cwd
+    phase:          "idle" | "running",
+    started_at:     Date
+}
+```
 
-The current overlay approach sidesteps all of these: the app draws its own window, controls exactly what is shown, and the connection stays open until the user explicitly acts.
+**Phase transitions** (only what matters for attention detection):
+
+| Event | Action |
+|-------|--------|
+| `SessionStart` | Create entry, phase = `idle`, store `cwd` as project name |
+| `UserPromptSubmit` | phase = `running` |
+| `PermissionRequest` | Show notification ("needs approval"), phase stays `running` |
+| `Notification` with `idle_prompt` subtype | Show notification ("waiting for input") |
+| `Stop` | Show notification ("task finished") if desired, phase = `idle` |
+| `SessionEnd` | Remove entry |
+
+**When to fire a notification:**
+```
+PermissionRequest  →  "Claude needs your approval"   (urgent)
+Notification       →  "Claude is waiting for input"  (high)
+Stop               →  "Claude finished"              (normal, optional)
+```
 
 ---
 
-### What could realistically be done with notifications
+#### 3. Notification payload
 
-A notification-based approach is viable for a **simpler, lower-fidelity version** of the behavior:
+Embed the routing data in `userInfo` so the click handler has everything it needs:
 
-- **Attention signal:** Show a system notification when `isAlert` becomes true. The user sees a banner and clicks it to bring the app (or terminal) to focus. Good enough if you don't need an in-app permission UI.
-- **Task completion:** `Stop` events can trigger a notification ("Claude finished your task") with zero IPC complexity — just `UNUserNotificationCenter.add(request)` in response to the event.
-- **Status summary:** A notification on `SessionEnd` summarizing what was done.
+```swift
+let content = UNMutableNotificationContent()
+content.title = "Claude needs attention"
+content.body  = projectName          // e.g. "my-app"
+content.sound = .defaultCritical
+content.userInfo = [
+    "session_id":    event.sessionId,
+    "terminal_pid":  session.terminalPid,
+    "shell_pid":     session.shellPid,
+    "terminal_app":  session.terminalApp   // "iTerm2", "Cursor", etc.
+]
 
-For these read-only, non-blocking alerts, macOS notifications work well and require no server at all. The hook script posts the event to a Unix socket or named pipe, the app processes it, and calls `UNUserNotificationCenter`.
+let request = UNNotificationRequest(
+    identifier: "claude-\(event.sessionId)",  // one notification per session
+    content: content,
+    trigger: nil   // deliver immediately
+)
+UNUserNotificationCenter.current().add(request)
+```
+
+Using `session_id` as the notification identifier means a second event for the same session **replaces** the previous notification rather than stacking.
 
 ---
 
-### Summary
+#### 4. Click handler: focus the right window
 
-| Requirement | HTTP server | Notifications only | Notifications + Unix socket/pipe |
-|-------------|-------------|--------------------|----------------------------------|
-| Receive events from hook | Yes | Partially (size/delivery limits) | Yes |
-| Block Claude Code for permission | Yes (holds connection) | No | Yes (pipe blocks hook script) |
-| Rich permission UI | Yes (custom overlay) | No (buttons only) | No (buttons only) |
-| Non-blocking alerts (task done, etc.) | Yes | Yes | Yes |
-| Works under Do Not Disturb | Yes | No | Partially |
-| No port conflicts | No | Yes | Yes |
-| Zero server code | No | Yes | Small (socket listener only) |
+```swift
+func userNotificationCenter(
+    _ center: UNUserNotificationCenter,
+    didReceive response: UNNotificationResponse,
+    withCompletionHandler completionHandler: @escaping () -> Void
+) {
+    let info = response.notification.request.content.userInfo
+    let termPid  = info["terminal_pid"] as? Int32 ?? 0
+    let shellPid = info["shell_pid"]    as? Int32 ?? 0
+    let termApp  = info["terminal_app"] as? String ?? ""
 
-**Bottom line:** You can remove the HTTP server by replacing TCP with a Unix domain socket (for event delivery) and a named pipe (for permission responses). macOS notifications can handle the user-visible alert side for simple cases, but they cannot replace the interactive permission UI — you still need a custom overlay or equivalent for that. A pure-notification approach with no custom IPC is only sufficient if you are willing to drop the blocking permission flow entirely and accept that Claude Code will auto-proceed without waiting for user input.
+    focusWindow(terminalApp: termApp, terminalPid: termPid, shellPid: shellPid)
+    completionHandler()
+}
+
+func focusWindow(terminalApp: String, terminalPid: Int32, shellPid: Int32) {
+    switch terminalApp {
+
+    case "iTerm2":
+        // AppleScript: find the session whose tty PID matches shellPid, select it
+        let script = """
+        tell application "iTerm2"
+            repeat with w in windows
+                repeat with t in tabs of w
+                    repeat with s in sessions of t
+                        if (pid of s) = \(shellPid) then
+                            tell w to select
+                            tell t to select
+                            tell s to select
+                            activate
+                            return
+                        end if
+                    end repeat
+                end repeat
+            end repeat
+        end tell
+        """
+        NSAppleScript(source: script)?.executeAndReturnError(nil)
+
+    case "Terminal":
+        let script = """
+        tell application "Terminal"
+            repeat with w in windows
+                repeat with t in tabs of w
+                    if (processes of t) contains \(shellPid) then
+                        set selected tab of w to t
+                        activate
+                        return
+                    end if
+                end repeat
+            end repeat
+        end tell
+        """
+        NSAppleScript(source: script)?.executeAndReturnError(nil)
+
+    case "Cursor", "Code", "Windsurf":
+        // These IDEs expose a URI handler or extension API.
+        // Simplest fallback: just activate the app by PID.
+        NSRunningApplication(processIdentifier: termPid)?.activate(options: .activateIgnoringOtherApps)
+
+    default:
+        // Ghostty, WezTerm, Kitty, Alacritty, Warp, Zed — app-level focus only
+        NSRunningApplication(processIdentifier: termPid)?.activate(options: .activateIgnoringOtherApps)
+    }
+}
+```
+
+---
+
+### What this approach gives you vs. this repo
+
+| Behavior | This repo | Notification approach |
+|----------|-----------|-----------------------|
+| Notified when Claude needs attention | Yes (visual overlay) | Yes (system notification) |
+| Click → focus exact terminal tab | Yes | Yes (same PID logic) |
+| Works while app is in background | Yes | Yes |
+| Works in full-screen apps / other spaces | Yes | Yes (notification appears on top) |
+| Approve/deny tool use interactively | Yes (blocks Claude) | No (Claude auto-proceeds) |
+| Custom mascot animation | Yes | No |
+| Multiple simultaneous sessions | Yes (overlay shows count) | Partial (one notification per session_id) |
+| No TCP port required | No | Yes |
+| Implementation size | Large (full macOS app) | Small (~300 lines Swift or equivalent) |
+
+---
+
+### Minimal viable implementation checklist
+
+1. Write `hook.sh` with the `ppid` walk and Unix socket delivery (shown above)
+2. Register hooks in `~/.claude/settings.json` for `PermissionRequest`, `Notification`, `Stop`, `SessionStart`, `SessionEnd`
+3. Write a background daemon that:
+   - Creates and listens on a Unix socket at a fixed path
+   - Maintains a `[String: SessionInfo]` dictionary keyed on `session_id`
+   - Requests `UNUserNotificationCenter` authorization on first launch
+   - Fires a notification with `userInfo` containing `terminal_pid`, `shell_pid`, `terminal_app`
+   - Implements `UNUserNotificationCenterDelegate.didReceive()` to call `focusWindow()`
+4. Implement `focusWindow()` with AppleScript for iTerm2/Terminal.app and `NSRunningApplication.activate()` for everything else
+5. Install the daemon as a `LaunchAgent` so it starts on login (`~/Library/LaunchAgents/com.yourname.claude-notify.plist`)
 
 ---
 
