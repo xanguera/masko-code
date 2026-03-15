@@ -295,6 +295,125 @@ To replicate this behavior in another project:
 
 ---
 
+## Alternative: Replacing the HTTP Server with macOS Notifications
+
+This section evaluates whether the same behavior could be achieved using the macOS notification system instead of a local HTTP server.
+
+### What the HTTP server actually does
+
+Before evaluating alternatives it helps to separate the server's two distinct jobs:
+
+| Job | Description |
+|-----|-------------|
+| **Event ingestion** | Receive events from the hook script (one-way, fire-and-forget for most events) |
+| **Permission blocking** | Hold a connection open until the user decides, then reply to unblock Claude Code (bidirectional, blocking) |
+
+These two jobs have different requirements, and a notification-only approach handles them very differently.
+
+### Can macOS notifications replace event ingestion?
+
+For most events (everything except `PermissionRequest`) the hook script just needs to hand data to the app and move on. Several macOS-native mechanisms can do this without a TCP server:
+
+**`NSDistributedNotificationCenter`**
+The system-wide notification bus (`notifyd`) already runs on every Mac. An app can subscribe to a named notification and receive a dictionary payload. From a bash script you can post to it via `osascript`:
+```bash
+osascript -e "do shell script \"\"" # not ideal
+```
+In practice, posting from bash requires either a tiny compiled helper binary or going through `osascript`, which adds overhead. Payload size is also limited (a few KB) and the API does not guarantee delivery if the receiving app is not running.
+
+**Unix domain socket**
+A UNIX socket file (e.g. `~/.masko-desktop/hook.sock`) works like the TCP server but without a port number and without going through the network stack. The hook script connects with `nc -U` or `curl --unix-socket`. This is arguably simpler than TCP and sidesteps port-conflict issues, but it is still a server — just not an HTTP one.
+
+**Named pipe (FIFO)**
+The hook script writes the event JSON to a FIFO file; the app reads from it in a background thread. Simple, zero dependencies, but strictly one-directional. Fine for fire-and-forget events; not usable for blocking permission requests.
+
+**File drop + FSEvents watch**
+The hook script writes each event to a temp file in a watched directory; the app uses `FSEvents` or `DispatchSource` to detect new files and process them. Similar tradeoffs to named pipes.
+
+**Verdict on event ingestion:** Yes, you could replace the HTTP server for plain event delivery using any of the above. A Unix domain socket is the closest drop-in replacement. `NSDistributedNotificationCenter` works but has payload size limits and no delivery guarantee.
+
+---
+
+### Can macOS notifications replace permission blocking?
+
+This is where a pure-notification approach breaks down.
+
+The current system works because the hook script's `curl` call **does not return** until the app closes the HTTP connection. Claude Code waits for the hook to return before proceeding. The decision (allow/deny) is carried in the HTTP response status code.
+
+macOS `UNUserNotificationCenter` notifications are **fire-and-forget from the sender's perspective**. There is no built-in mechanism to:
+- Block the sender until the user taps an action button
+- Send a structured response back to the originating process
+
+To replicate the blocking behavior you would still need a second IPC channel. A workable hybrid looks like this:
+
+```
+hook-sender.sh
+  1. Write event JSON to Unix socket (or named pipe)       ← replaces POST /hook
+  2. For PermissionRequest: open a named pipe for response
+     e.g.  mkfifo /tmp/masko-response-$$
+           echo $response_pipe_path >> event
+  3. cat $response_pipe_path                               ← blocks here
+  4. Read "allow" or "deny" from pipe, exit with code
+
+App (Swift)
+  1. Reads event from socket
+  2. Shows UNUserNotification with "Allow" / "Deny" actions
+  3. UNUserNotificationCenterDelegate.didReceive() fires when user taps
+  4. Writes "allow" or "deny" to the named pipe path from the event
+  5. Hook script unblocks and exits
+```
+
+This works, but the notification subsystem is now only the user-facing alert layer. The actual blocking/response mechanism is a named pipe or Unix socket — which is still a custom IPC channel, just a simpler one than HTTP.
+
+---
+
+### Limitations of using macOS notifications as the primary UI
+
+Even if the IPC problem is solved, using `UNUserNotificationCenter` as the main attention UI has real constraints:
+
+| Limitation | Impact |
+|------------|--------|
+| **Action buttons are text-only, max ~4** | Cannot show a numbered list of tool options like the current prompt does |
+| **No interactive input** | User cannot type a custom response |
+| **Notification grouping / collapsing** | Multiple pending permissions can get stacked and hidden |
+| **Do Not Disturb / Focus mode** | Notifications can be suppressed entirely |
+| **Banner auto-dismiss** | If the user doesn't act quickly, the banner disappears (though it stays in Notification Center) |
+| **Cannot update a delivered notification** | If the session ends while a permission is pending, you cannot retract the notification |
+| **No rich layout** | Cannot render the tool name, arguments, or multi-option selection UI |
+| **Requires notification permission from the user** | The app must request and be granted notification authorization |
+
+The current overlay approach sidesteps all of these: the app draws its own window, controls exactly what is shown, and the connection stays open until the user explicitly acts.
+
+---
+
+### What could realistically be done with notifications
+
+A notification-based approach is viable for a **simpler, lower-fidelity version** of the behavior:
+
+- **Attention signal:** Show a system notification when `isAlert` becomes true. The user sees a banner and clicks it to bring the app (or terminal) to focus. Good enough if you don't need an in-app permission UI.
+- **Task completion:** `Stop` events can trigger a notification ("Claude finished your task") with zero IPC complexity — just `UNUserNotificationCenter.add(request)` in response to the event.
+- **Status summary:** A notification on `SessionEnd` summarizing what was done.
+
+For these read-only, non-blocking alerts, macOS notifications work well and require no server at all. The hook script posts the event to a Unix socket or named pipe, the app processes it, and calls `UNUserNotificationCenter`.
+
+---
+
+### Summary
+
+| Requirement | HTTP server | Notifications only | Notifications + Unix socket/pipe |
+|-------------|-------------|--------------------|----------------------------------|
+| Receive events from hook | Yes | Partially (size/delivery limits) | Yes |
+| Block Claude Code for permission | Yes (holds connection) | No | Yes (pipe blocks hook script) |
+| Rich permission UI | Yes (custom overlay) | No (buttons only) | No (buttons only) |
+| Non-blocking alerts (task done, etc.) | Yes | Yes | Yes |
+| Works under Do Not Disturb | Yes | No | Partially |
+| No port conflicts | No | Yes | Yes |
+| Zero server code | No | Yes | Small (socket listener only) |
+
+**Bottom line:** You can remove the HTTP server by replacing TCP with a Unix domain socket (for event delivery) and a named pipe (for permission responses). macOS notifications can handle the user-visible alert side for simple cases, but they cannot replace the interactive permission UI — you still need a custom overlay or equivalent for that. A pure-notification approach with no custom IPC is only sufficient if you are willing to drop the blocking permission flow entirely and accept that Claude Code will auto-proceed without waiting for user input.
+
+---
+
 ## Key Files in This Repo
 
 | File | Role |
